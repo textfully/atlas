@@ -1,6 +1,6 @@
 import json
 from utils.logger import logger
-from server.services import atlas
+from services import atlas
 
 
 def process_message(sender, is_from_atlas, message_text, attachments):

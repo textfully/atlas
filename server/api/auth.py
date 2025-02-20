@@ -1,10 +1,11 @@
 from api.types.enums import ApiKeyPermission
-from fastapi import HTTPException, Security
+from fastapi import HTTPException, Security, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime, timezone
 import secrets
 import hashlib
 from typing import Optional, Tuple
+from api.types.models import ApiKeyModel
 from utils.supabase_client import SupabaseClient
 from utils.logger import logger
 
@@ -66,18 +67,18 @@ class AuthService:
         short_key = cls.get_short_key(api_key)
         created_at = datetime.now(timezone.utc).isoformat()
 
-        api_key_data = {
-            "user_id": user_id,
-            "key_hash": hashed_key,
-            "short_key": short_key,
-            "created_at": created_at,
-            "last_used": created_at,
-            "is_active": True,
-            "name": name,
-            "permission": permission,
-        }
+        api_key_data = ApiKeyModel(
+            user_id=user_id,
+            key_hash=hashed_key,
+            short_key=short_key,
+            created_at=created_at,
+            last_used=created_at,
+            is_active=True,
+            name=name,
+            permission=permission,
+        ).dict(exclude={"id"})
 
-        _, error = await SupabaseClient.store_api_key(api_key_data)
+        _, error = await SupabaseClient.table("api_keys").insert(api_key_data)
         if error:
             logger.error(f"Failed to create API key: {error}")
             raise HTTPException(status_code=500, detail="Failed to create API key")
@@ -128,11 +129,14 @@ class AuthService:
 
 async def verify_bearer_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
-) -> str:
+    x_organization_id: Optional[str] = Header(None, alias="X-Organization-ID"),
+) -> Tuple[str, str]:
     """Verify bearer token and return user_id
 
     Returns:
-        str: User ID
+        Tuple[str, Optional[str]]: Contains:
+            - user_id (str): The authenticated user ID
+            - organization_id (Optional[str]): The verified organization ID, or None if not provided
 
     Raises:
         HTTPException: If bearer token is invalid
@@ -140,18 +144,21 @@ async def verify_bearer_token(
     token = credentials.credentials
 
     if token.startswith("tx_"):
-        return await verify_api_key(credentials)
+        return await verify_api_key(credentials, x_organization_id)
     else:
-        return await verify_auth_token(credentials)
+        return await verify_auth_token(credentials, x_organization_id)
 
 
 async def verify_auth_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
-) -> str:
+    x_organization_id: Optional[str] = Header(None, alias="X-Organization-ID"),
+) -> Tuple[str, str]:
     """Verify authentication token and return user_id
 
     Returns:
-        str: User ID
+        Tuple[str, Optional[str]]: Contains:
+            - user_id (str): The authenticated user ID
+            - organization_id (str): The verified organization ID, or None if not provided
 
     Raises:
         HTTPException: If authentication token is invalid
@@ -162,18 +169,35 @@ async def verify_auth_token(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid authentication token")
 
-        return user_id
+        data, error = await SupabaseClient.verify_organization_access(
+            x_organization_id, user_id
+        )
+
+        if error:
+            raise HTTPException(
+                status_code=403, detail="User does not have access to organization"
+            )
+
+        if not data:
+            raise HTTPException(status_code=400, detail="Organization ID not found")
+
+        organization_id = data["organization_id"]
+
+        return user_id, organization_id
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
 
 async def verify_api_key(
     credentials: HTTPAuthorizationCredentials = Security(security),
-) -> str:
+    x_organization_id: Optional[str] = Header(None, alias="X-Organization-ID"),
+) -> Tuple[str, str]:
     """Verify API key and return user_id
 
     Returns:
-        str: User ID
+        Tuple[str, Optional[str]]: Contains:
+            - user_id (str): The authenticated user ID
+            - organization_id (str): The verified organization ID, or None if not provided
 
     Raises:
         HTTPException: If API key is invalid
@@ -184,7 +208,21 @@ async def verify_api_key(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        return user_id
+        data, error = await SupabaseClient.verify_organization_access(
+            x_organization_id, user_id
+        )
+
+        if error:
+            raise HTTPException(
+                status_code=403, detail="User does not have access to organization"
+            )
+
+        if not data:
+            raise HTTPException(status_code=400, detail="Organization ID not found")
+
+        organization_id = data["organization_id"]
+
+        return user_id, organization_id
     except HTTPException:
         raise
     except Exception as e:

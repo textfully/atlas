@@ -24,3 +24,9 @@ class SubscriptionTier(str, Enum):
     BASIC = "basic"
     PRO = "pro"
     ENTERPRISE = "enterprise"
+
+
+class OrganizationRole(str, Enum):
+    OWNER = "owner"
+    ADMINISTRATOR = "administrator"
+    DEVELOPER = "developer"

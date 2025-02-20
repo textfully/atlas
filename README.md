@@ -24,7 +24,27 @@ Create `.env` files and retrieve secrets from AWS Secrets Manager
 cp server/.env.example server/.env
 ```
 
-### Usage
+### Install Dependencies
+
+```sh
+pip install -r requirements.txt
+```
+
+### Run Server
+
+API Server (for EC2):
+
+```sh
+python server/api_server.py
+```
+
+Messaging Server (for Atlas):
+
+```sh
+python server/messaging_server.py
+```
+
+### Configuration
 
 API Server Base URL:
 

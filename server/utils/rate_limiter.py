@@ -1,7 +1,6 @@
 from api.types.enums import SubscriptionTier
-from fastapi import HTTPException
+from fastapi import HTTPException, Header, Security
 from datetime import datetime, timedelta, timezone
-from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import time
 from typing import Optional, Dict, Any, Tuple
@@ -171,14 +170,16 @@ async def get_user_tier(user_id: str) -> SubscriptionTier:
 
 async def check_rate_limit(
     credentials: HTTPAuthorizationCredentials = Security(security),
-) -> Tuple[str, Optional[Dict[str, str]]]:
+    x_organization_id: str = Header(..., alias="X-Organization-ID"),
+) -> Tuple[str, str, Optional[Dict[str, str]]]:
     """Rate limiting dependency for message endpoints
 
     Uses same authentication logic as verify_api_key for API key validation.
 
     Returns:
-        Tuple[str, Optional[Dict[str, str]]]: Contains:
-            - user_id (str): The verified user ID
+        Tuple[str, str, Optional[Dict[str, str]]]: Contains:
+            - user_id (str): The authenticated user ID
+            - organization_id (str): The verified organization ID
             - rate_limit_headers (Optional[Dict[str, str]]): Rate limit headers if applicable
 
     Raises:
@@ -190,13 +191,20 @@ async def check_rate_limit(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # Get user's tier
-        tier = await get_user_tier(user_id)
+        data, error = await SupabaseClient.verify_organization_access(
+            x_organization_id, user_id
+        )
+        if error or not data:
+            raise HTTPException(
+                status_code=403, detail="User does not have access to organization"
+            )
 
-        # Check rate limits
+        organization_id = data["organization_id"]
+
+        tier = await get_user_tier(user_id)
         rate_limit_headers = await RateLimiter.check_message_rate(user_id, tier)
 
-        return user_id, rate_limit_headers
+        return user_id, organization_id, rate_limit_headers
     except HTTPException:
         raise
     except Exception as e:

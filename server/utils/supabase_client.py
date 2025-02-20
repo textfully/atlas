@@ -248,3 +248,41 @@ class SupabaseClient:
             )
 
         return await cls.execute_query(query)
+
+    @classmethod
+    async def verify_organization_access(
+        cls, organization_id: Optional[str], user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Verify user organization access in Supabase
+
+        Args:
+            organization_id (Optional[str]): Organization ID if provided
+            user_id (str): User ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            if organization_id:
+                return (
+                    await client.table("organization_members")
+                    .select("*")
+                    .eq("organization_id", organization_id)
+                    .eq("user_id", user_id)
+                    .single()
+                    .execute()
+                )
+            else:
+                return (
+                    await client.table("organization_members")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .order("created_at", desc=False)
+                    .single()
+                    .execute()
+                )
+
+        return await cls.execute_query(query)
