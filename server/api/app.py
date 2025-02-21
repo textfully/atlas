@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Response, Body
+from fastapi import FastAPI, Depends, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Tuple
 import phonenumbers
@@ -9,7 +9,12 @@ from utils.rate_limiter import check_rate_limit, RateLimiter, get_organization_t
 from utils.logger import logger
 from utils.supabase_client import SupabaseClient
 from services import atlas
-from api.auth import AuthService, verify_api_key, verify_bearer_token
+from api.auth import (
+    AuthService,
+    verify_api_key,
+    verify_bearer_token,
+    verify_bearer_token_skip_org_check,
+)
 from api.types.enums import MessageService, MessageStatus, OrganizationRole
 from api.types.requests import MessageRequest, APIKeyRequest, OrganizationRequest
 from api.types.responses import (
@@ -149,12 +154,14 @@ async def get_message(
     user_id, organization_id = user_info
 
     try:
-        # Check message ownership and get message
         data, error = await SupabaseClient.fetch_message(
             message_id, user_id, organization_id
         )
 
-        if error or not data:
+        if error:
+            raise HTTPException(status_code=500, detail="Failed to fetch message")
+
+        if not data:
             raise HTTPException(status_code=404, detail="Message not found")
 
         return MessageResponse(
@@ -180,11 +187,13 @@ async def fetch_messages(
     limit: int = 50,
     offset: int = 0,
 ):
-    """Fetch user's messages"""
-    user_id, organization_id = user_info
+    """Fetch organization's messages"""
+    _, organization_id = user_info
 
     try:
-        data, error = await SupabaseClient.fetch_user_messages(user_id, limit, offset)
+        data, error = await SupabaseClient.fetch_organization_messages(
+            organization_id, limit, offset
+        )
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to fetch messages")
@@ -211,7 +220,7 @@ async def fetch_messages(
 
 @app.get("/organizations", response_model=List[OrganizationResponse])
 async def fetch_organizations(
-    user_info: Tuple[str, str] = Depends(verify_bearer_token)
+    user_info: Tuple[str, Optional[str]] = Depends(verify_bearer_token_skip_org_check)
 ):
     """Fetch user's organizations"""
     user_id, _ = user_info
@@ -221,8 +230,10 @@ async def fetch_organizations(
             await SupabaseClient.fetch_organization_memberships(user_id)
         )
 
-        if memberships_error:
-            raise HTTPException(status_code=500, detail="Failed to fetch organizations")
+        if memberships_error or not memberships_data:
+            raise HTTPException(
+                status_code=500, detail="Failed to fetch organization memberships"
+            )
 
         organization_ids = [mem["organization_id"] for mem in memberships_data]
         role_lookup = {mem["organization_id"]: mem["role"] for mem in memberships_data}
@@ -255,7 +266,7 @@ async def fetch_organizations(
 @app.post("/organizations", response_model=OrganizationResponse)
 async def create_organization(
     request: OrganizationRequest,
-    user_info: Tuple[str, str] = Depends(verify_bearer_token),
+    user_info: Tuple[str, Optional[str]] = Depends(verify_bearer_token_skip_org_check),
 ):
     """Create a new organization"""
     user_id, _ = user_info
@@ -269,16 +280,13 @@ async def create_organization(
         )
 
         if error:
-            logger.error(f"Failed to create organization: {error}")
             raise HTTPException(status_code=500, detail="Failed to create organization")
 
         # Fetch the created organization
         org_data, org_error = await SupabaseClient.fetch_organization(organization_id)
 
         if org_error or not org_data:
-            raise HTTPException(
-                status_code=500, detail="Failed to fetch created organization"
-            )
+            raise HTTPException(status_code=500, detail="Failed to fetch organization")
 
         return OrganizationResponse(
             id=org_data["id"],
@@ -293,6 +301,56 @@ async def create_organization(
     except Exception as e:
         logger.error(f"Failed to create organization: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create organization")
+
+
+@app.delete("/organizations/{organization_id}", status_code=204)
+async def delete_organization(
+    organization_id: str,
+    user_info: Tuple[str, Optional[str]] = Depends(verify_bearer_token),
+):
+    """Delete an organization"""
+    user_id, organization_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if organization_id != organization_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        # Check organization ownership
+        memberships_data, memberships_error = (
+            await SupabaseClient.fetch_organization_memberships(user_id)
+        )
+
+        if memberships_error or not memberships_data:
+            raise HTTPException(
+                status_code=500, detail="Failed to fetch organization memberships"
+            )
+
+        if not any(
+            mem["organization_id"] == organization_id
+            and mem["role"] == OrganizationRole.OWNER
+            for mem in memberships_data
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Only organization owners can delete the organization",
+            )
+
+        # Delete organization
+        _, error = await SupabaseClient.delete_organization(organization_id)
+
+        if error:
+            raise HTTPException(status_code=500, detail="Failed to delete organization")
+
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete organization")
 
 
 @app.get("/contacts", response_model=List[ContactResponse])
@@ -404,7 +462,10 @@ async def revoke_api_key(
         # Check API key ownership
         data, error = await SupabaseClient.fetch_organization_api_keys(organization_id)
 
-        if error or not any(key["id"] == key_id for key in data):
+        if error:
+            raise HTTPException(status_code=500, detail="Failed to fetch API keys")
+
+        if not any(key["id"] == key_id for key in data) or not data:
             raise HTTPException(status_code=404, detail="API key not found")
 
         # Revoke key

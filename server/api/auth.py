@@ -133,14 +133,35 @@ class AuthService:
 
 async def verify_bearer_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
-    x_organization_id: Optional[str] = Header(
-        None, alias="X-Organization-ID", required=False
-    ),
+    x_organization_id: str = Header(None, alias="X-Organization-ID"),
 ) -> Tuple[str, str]:
     """Verify bearer token and return user_id
 
     Returns:
-        Tuple[str, Optional[str]]: Contains:
+        Tuple[str, str]: Contains:
+            - user_id (str): The authenticated user ID
+            - organization_id (str): The verified organization ID
+
+    Raises:
+        HTTPException: If bearer token is invalid
+    """
+    token = credentials.credentials
+
+    if token.startswith("tx_"):
+        return await verify_api_key(credentials)
+    else:
+        return await verify_auth_token(
+            credentials, x_organization_id, skip_org_check=False
+        )
+
+
+async def verify_bearer_token_skip_org_check(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> Tuple[str, Optional[str]]:
+    """Verify bearer token and return user_id (without X-Organization-ID header)
+
+    Returns:
+        Tuple[str, None]: Contains:
             - user_id (str): The authenticated user ID
             - organization_id (Optional[str]): The verified organization ID, or None if not provided
 
@@ -150,23 +171,22 @@ async def verify_bearer_token(
     token = credentials.credentials
 
     if token.startswith("tx_"):
-        return await verify_api_key(credentials, x_organization_id)
+        return await verify_api_key(credentials)
     else:
-        return await verify_auth_token(credentials, x_organization_id)
+        return await verify_auth_token(credentials, skip_org_check=True)
 
 
 async def verify_auth_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
-    x_organization_id: Optional[str] = Header(
-        None, alias="X-Organization-ID", required=False
-    ),
-) -> Tuple[str, str]:
+    organization_id: Optional[str] = None,
+    skip_org_check: bool = False,
+) -> Tuple[str, Optional[str]]:
     """Verify authentication token and return user_id and organization_id
 
     Returns:
-        Tuple[str, str]: Contains:
+        Tuple[str, Optional[str]]: Contains:
             - user_id (str): The authenticated user ID
-            - organization_id (str): The verified organization ID
+            - organization_id (Optional[str]): The verified organization ID, or None if not provided
 
     Raises:
         HTTPException: If authentication token is invalid or organization access is denied
@@ -177,23 +197,26 @@ async def verify_auth_token(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid authentication")
 
-        if not x_organization_id:
+        if not organization_id and not skip_org_check:
             raise HTTPException(
                 status_code=401,
                 detail="X-Organization-ID header is required",
             )
 
-        # Verify user has access to the specified organization
-        data, error = await SupabaseClient.verify_organization_membership(
-            organization_id=x_organization_id, user_id=user_id
-        )
-        if error or not data:
-            raise HTTPException(
-                status_code=403,
-                detail="User does not have access to the specified organization",
+        if not skip_org_check:
+            # Verify user has access to the specified organization
+            data, error = await SupabaseClient.verify_organization_membership(
+                organization_id=organization_id, user_id=user_id
             )
+            if error or not data:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Unauthorized organization access",
+                )
 
-        return user_id, x_organization_id
+            return user_id, organization_id
+        else:
+            return user_id, None
 
     except HTTPException:
         raise

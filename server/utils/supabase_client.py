@@ -101,14 +101,14 @@ class SupabaseClient:
         return await cls.execute_query(query)
 
     @classmethod
-    async def fetch_user_messages(
-        cls, user_id: str, limit: int = 50, offset: int = 0
+    async def fetch_organization_messages(
+        cls, organization_id: str, limit: int = 50, offset: int = 0
     ) -> Tuple[Any, Optional[str]]:
         """
-        Fetch user messages from Supabase
+        Fetch organization messages from Supabase
 
         Args:
-            user_id (str): The user's ID
+            organization_id (str): The organization's ID
             limit (int): Number of messages to return
             offset (int): Number of messages to skip
 
@@ -122,7 +122,7 @@ class SupabaseClient:
             return (
                 await client.table("messages")
                 .select("*")
-                .eq("user_id", user_id)
+                .eq("organization_id", organization_id)
                 .order("sent_at", desc=True)
                 .limit(limit)
                 .offset(offset)
@@ -293,6 +293,32 @@ class SupabaseClient:
             return await client.rpc(
                 "create_organization", {"p_name": name, "p_user_id": user_id}
             ).execute()
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def delete_organization(
+        cls, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Delete an organization
+
+        Args:
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organizations")
+                .delete()
+                .eq("id", organization_id)
+                .execute()
+            )
 
         return await cls.execute_query(query)
 
