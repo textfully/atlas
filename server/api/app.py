@@ -1,17 +1,17 @@
-from fastapi import FastAPI, Depends, HTTPException, Response
+from fastapi import FastAPI, Depends, HTTPException, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Tuple
 import phonenumbers
 from datetime import datetime, timezone
 from config.settings import FEATUREBASE_IDENTITY_VERIFICATION_SECRET
 from api.types.models import MessageModel
-from utils.rate_limiter import check_rate_limit, RateLimiter, get_user_tier
+from utils.rate_limiter import check_rate_limit, RateLimiter, get_organization_tier
 from utils.logger import logger
 from utils.supabase_client import SupabaseClient
 from services import atlas
-from api.auth import AuthService, verify_auth_token, verify_api_key, verify_bearer_token
-from api.types.enums import MessageService, MessageStatus
-from api.types.requests import MessageRequest, APIKeyRequest
+from api.auth import AuthService, verify_api_key, verify_bearer_token
+from api.types.enums import MessageService, MessageStatus, OrganizationRole
+from api.types.requests import MessageRequest, APIKeyRequest, OrganizationRequest
 from api.types.responses import (
     APIKeyResponse,
     ContactResponse,
@@ -41,11 +41,9 @@ app.add_middleware(
 
 @app.post("/messages", response_model=MessageResponse)
 async def send_message(
-    message: MessageRequest,
+    request: MessageRequest,
     response: Response,
-    rate_limit_info: Tuple[str, str, Optional[Dict[str, str]]] = Depends(
-        check_rate_limit
-    ),
+    rate_limit_info: Tuple[str, str, Dict[str, str]] = Depends(check_rate_limit),
 ):
     """
     Send a message
@@ -61,63 +59,66 @@ async def send_message(
             response.headers[header] = value
 
     try:
-        parsed_number = phonenumbers.parse(message.to)
+        parsed_number = phonenumbers.parse(request.to)
         if not phonenumbers.is_valid_number(parsed_number):
             raise HTTPException(status_code=400, detail="Invalid phone number")
 
-        if message.text.strip() == "":
+        if request.text.strip() == "":
             raise HTTPException(status_code=400, detail="Message text cannot be empty")
 
-        is_imessage_available = atlas.check_imessage_availability(message.to)
+        is_imessage_available = atlas.check_imessage_availability(request.to)
 
         message_service = (
             MessageService.IMESSAGE
-            if message.service == MessageService.IMESSAGE and is_imessage_available
+            if request.service == MessageService.IMESSAGE and is_imessage_available
             else MessageService.SMS
         )
         service_prefix = (
             "iMessage" if message_service == MessageService.IMESSAGE else "SMS"
         )
-        chat_guid = atlas.get_chat(f"{service_prefix};-;{message.to}")
+        chat_guid = atlas.get_chat(f"{service_prefix};-;{request.to}")
 
         if chat_guid:
             message_guid = atlas.send_text(
-                chat_guid=chat_guid, message=message.text, method="private-api"
+                chat_guid=chat_guid, message=request.text, method="private-api"
             )
         else:
-            message_guid = atlas.create_chat(recipient=message.to, message=message.text)
+            message_guid = atlas.create_chat(recipient=request.to, message=request.text)
 
         if not message_guid:
             raise HTTPException(status_code=500, detail="Failed to send message")
 
         is_sms_fallback = (
-            message.service == MessageService.IMESSAGE and not is_imessage_available
+            request.service == MessageService.IMESSAGE and not is_imessage_available
         )
 
         # Store message in database
         message_data = MessageModel(
+            id="",
             organization_id=organization_id,
             user_id=user_id,
             message_id=message_guid,
-            recipient=message.to,
-            text=message.text,
+            recipient=request.to,
+            text=request.text,
             service=message_service,
             status=MessageStatus.SENT,
-            sent_at=datetime.now(timezone.utc).isoformat(),
+            sent_at=datetime.now(timezone.utc),
             sms_fallback=is_sms_fallback,
-        ).dict(exclude={"id"})
+        ).model_dump(exclude={"id"}, exclude_unset=True)
 
-        data, error = await SupabaseClient.store_message(message_data)
+        data, error = await SupabaseClient.create_message(message_data)
         if error:
             logger.error(f"Failed to store message: {error}")
             raise HTTPException(status_code=500, detail="Failed to store message")
 
+        await RateLimiter.increment_daily_count(organization_id)
+
         message_id = data[0]["id"]
         return MessageResponse(
             id=message_id,
-            recipient=message.to,
-            text=message.text,
-            service=message.service,
+            recipient=request.to,
+            text=request.text,
+            service=request.service,
             status=MessageStatus.SENT,
             sent_at=datetime.now(timezone.utc),
             sms_fallback=is_sms_fallback,
@@ -135,28 +136,22 @@ async def send_message(
 @app.get("/messages/limits")
 async def get_message_limits(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
     """Get current rate limit status"""
-    user_id, _ = user_info
-    tier = await get_user_tier(user_id)
-    return await RateLimiter.get_current_limits(user_id, tier)
+    _, organization_id = user_info
+    tier = await get_organization_tier(organization_id)
+    return await RateLimiter.get_current_limits(organization_id, tier)
 
 
 @app.get("/messages/{message_id}", response_model=MessageResponse)
 async def get_message(
-    message_id: str, user_info: Tuple[str, str] = Depends(verify_api_key)
+    message_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
 ):
     """Get a message details"""
     user_id, organization_id = user_info
 
     try:
         # Check message ownership and get message
-        data, error = await SupabaseClient.execute_query(
-            lambda client: client.table("messages")
-            .select("*")
-            .eq("id", message_id)
-            .eq("user_id", user_id)
-            .eq("organization_id", organization_id)
-            .single()
-            .execute()
+        data, error = await SupabaseClient.fetch_message(
+            message_id, user_id, organization_id
         )
 
         if error or not data:
@@ -168,7 +163,7 @@ async def get_message(
             text=data["text"],
             service=MessageService(data["service"]),
             status=MessageStatus(data["status"]),
-            sent_at=datetime.fromisoformat(data["sent_at"]),
+            sent_at=data["sent_at"],
             sms_fallback=data["sms_fallback"],
         )
 
@@ -189,16 +184,7 @@ async def fetch_messages(
     user_id, organization_id = user_info
 
     try:
-        data, error = await SupabaseClient.execute_query(
-            lambda client: client.table("messages")
-            .select("*")
-            .eq("user_id", user_id)
-            .eq("organization_id", organization_id)
-            .order("sent_at", desc=True)
-            .limit(limit)
-            .offset(offset)
-            .execute()
-        )
+        data, error = await SupabaseClient.fetch_user_messages(user_id, limit, offset)
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to fetch messages")
@@ -210,7 +196,7 @@ async def fetch_messages(
                 text=msg["text"],
                 service=MessageService(msg["service"]),
                 status=MessageStatus(msg["status"]),
-                sent_at=datetime.fromisoformat(msg["sent_at"]),
+                sent_at=msg["sent_at"],
                 sms_fallback=msg["sms_fallback"],
             )
             for msg in data
@@ -231,11 +217,8 @@ async def fetch_organizations(
     user_id, _ = user_info
 
     try:
-        memberships_data, memberships_error = await SupabaseClient.execute_query(
-            lambda client: client.table("organization_members")
-            .select("organization_id, role")
-            .eq("user_id", user_id)
-            .execute()
+        memberships_data, memberships_error = (
+            await SupabaseClient.fetch_organization_memberships(user_id)
         )
 
         if memberships_error:
@@ -244,11 +227,8 @@ async def fetch_organizations(
         organization_ids = [mem["organization_id"] for mem in memberships_data]
         role_lookup = {mem["organization_id"]: mem["role"] for mem in memberships_data}
 
-        organizations_data, organizations_error = await SupabaseClient.execute_query(
-            lambda client: client.table("organizations")
-            .select("*")
-            .in_("id", organization_ids)
-            .execute()
+        organizations_data, organizations_error = (
+            await SupabaseClient.fetch_organizations(organization_ids)
         )
 
         if organizations_error:
@@ -259,8 +239,8 @@ async def fetch_organizations(
                 id=org["id"],
                 name=org["name"],
                 role=role_lookup[org["id"]],
-                created_at=datetime.fromisoformat(org["created_at"]),
-                updated_at=datetime.fromisoformat(org["updated_at"]),
+                created_at=org["created_at"],
+                updated_at=org["updated_at"],
             )
             for org in organizations_data
         ]
@@ -272,17 +252,57 @@ async def fetch_organizations(
         raise HTTPException(status_code=500, detail="Failed to fetch organizations")
 
 
+@app.post("/organizations", response_model=OrganizationResponse)
+async def create_organization(
+    request: OrganizationRequest,
+    user_info: Tuple[str, str] = Depends(verify_bearer_token),
+):
+    """Create a new organization"""
+    user_id, _ = user_info
+
+    try:
+        if not request.get("name"):
+            raise HTTPException(status_code=400, detail="Organization name is required")
+
+        organization_id, error = await SupabaseClient.create_organization(
+            request["name"], user_id
+        )
+
+        if error:
+            logger.error(f"Failed to create organization: {error}")
+            raise HTTPException(status_code=500, detail="Failed to create organization")
+
+        # Fetch the created organization
+        org_data, org_error = await SupabaseClient.fetch_organization(organization_id)
+
+        if org_error or not org_data:
+            raise HTTPException(
+                status_code=500, detail="Failed to fetch created organization"
+            )
+
+        return OrganizationResponse(
+            id=org_data["id"],
+            name=org_data["name"],
+            role=OrganizationRole.OWNER,
+            created_at=org_data["created_at"],
+            updated_at=org_data["updated_at"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create organization")
+
+
 @app.get("/contacts", response_model=List[ContactResponse])
 async def fetch_contacts(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
     """Fetch organization's contacts"""
     _, organization_id = user_info
 
     try:
-        org_contacts_data, org_contacts_error = await SupabaseClient.execute_query(
-            lambda client: client.table("organization_contacts")
-            .select("*")
-            .eq("organization_id", organization_id)
-            .execute()
+        org_contacts_data, org_contacts_error = (
+            await SupabaseClient.fetch_organization_contacts(organization_id)
         )
 
         if org_contacts_error:
@@ -290,12 +310,7 @@ async def fetch_contacts(user_info: Tuple[str, str] = Depends(verify_bearer_toke
 
         contact_ids = [oc["contact_id"] for oc in org_contacts_data]
 
-        contacts_data, contacts_error = await SupabaseClient.execute_query(
-            lambda client: client.table("contacts")
-            .select("phone_number")
-            .in_("id", contact_ids)
-            .execute()
-        )
+        contacts_data, contacts_error = await SupabaseClient.fetch_contacts(contact_ids)
 
         if contacts_error:
             raise HTTPException(status_code=500, detail="Failed to fetch contacts")
@@ -310,8 +325,8 @@ async def fetch_contacts(user_info: Tuple[str, str] = Depends(verify_bearer_toke
                 last_name=org_contact["last_name"],
                 is_subscribed=org_contact["is_subscribed"],
                 note=org_contact["note"],
-                created_at=datetime.fromisoformat(org_contact["created_at"]),
-                updated_at=datetime.fromisoformat(org_contact["updated_at"]),
+                created_at=org_contact["created_at"],
+                updated_at=org_contact["updated_at"],
             )
             for org_contact in org_contacts_data
         ]
@@ -324,35 +339,35 @@ async def fetch_contacts(user_info: Tuple[str, str] = Depends(verify_bearer_toke
 
 
 @app.post("/api-keys", response_model=CreateAPIKeyResponse)
-async def generate_api_key(
-    request: APIKeyRequest, user_id: str = Depends(verify_auth_token)
+async def create_api_key(
+    request: APIKeyRequest, user_info: Tuple[str, str] = Depends(verify_bearer_token)
 ):
-    """Generate a new API key"""
+    """Create a new API key"""
+    user_id, organization_id = user_info
+
     try:
         api_key, created_at = await AuthService.create_api_key(
-            user_id, name=request.name, permission=request.permission
+            user_id=user_id,
+            organization_id=organization_id,
+            name=request.name,
+            permission=request.permission,
         )
         return CreateAPIKeyResponse(api_key=api_key, created_at=created_at)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to generate API key: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to generate API key")
+        logger.error(f"Failed to create API key: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create API key")
 
 
 @app.get("/api-keys", response_model=List[APIKeyResponse])
-async def fetch_api_keys(user_id: str = Depends(verify_auth_token)):
-    """Fetch user's API keys"""
+async def fetch_api_keys(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
+    """Fetch organization's API keys"""
+    _, organization_id = user_info
+
     try:
-        data, error = await SupabaseClient.execute_query(
-            lambda client: client.table("api_keys")
-            .select("*")
-            .eq("user_id", user_id)
-            .eq("is_active", True)
-            .order("created_at", desc=True)
-            .execute()
-        )
+        data, error = await SupabaseClient.fetch_organization_api_keys(organization_id)
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to fetch API keys")
@@ -360,12 +375,13 @@ async def fetch_api_keys(user_id: str = Depends(verify_auth_token)):
         return [
             APIKeyResponse(
                 id=key["id"],
+                organization_id=key["organization_id"],
                 name=key["name"],
                 permission=key["permission"],
                 short_key=key["short_key"],
                 is_active=key["is_active"],
-                last_used=datetime.fromisoformat(key["last_used"]),
-                created_at=datetime.fromisoformat(key["created_at"]),
+                last_used=key["last_used"],
+                created_at=key["created_at"],
             )
             for key in data
         ]
@@ -378,29 +394,21 @@ async def fetch_api_keys(user_id: str = Depends(verify_auth_token)):
 
 
 @app.delete("/api-keys/{key_id}", status_code=204)
-async def revoke_api_key(key_id: str, user_id: str = Depends(verify_auth_token)):
+async def revoke_api_key(
+    key_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
+):
     """Revoke an API key"""
+    _, organization_id = user_info
+
     try:
         # Check API key ownership
-        data, error = await SupabaseClient.execute_query(
-            lambda client: client.table("api_keys")
-            .select("id")
-            .eq("id", key_id)
-            .eq("user_id", user_id)
-            .single()
-            .execute()
-        )
+        data, error = await SupabaseClient.fetch_organization_api_keys(organization_id)
 
-        if error or not data:
+        if error or not any(key["id"] == key_id for key in data):
             raise HTTPException(status_code=404, detail="API key not found")
 
         # Revoke key
-        _, error = await SupabaseClient.execute_query(
-            lambda client: client.table("api_keys")
-            .update({"is_active": False})
-            .eq("id", key_id)
-            .execute()
-        )
+        _, error = await SupabaseClient.revoke_api_key(key_id, organization_id)
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to revoke API key")
@@ -419,9 +427,7 @@ async def health_check():
     """Health check endpoint"""
     try:
         # Check Supabase connection
-        _, error = await SupabaseClient.execute_query(
-            lambda client: client.rpc("health_check").execute()
-        )
+        _, error = await SupabaseClient.health_check()
 
         if error:
             raise HTTPException(status_code=503, detail="Database connection failed")
@@ -436,12 +442,14 @@ async def health_check():
 
 
 @app.get("/identity", response_model=IdentityResponse)
-async def get_identity_hash(user_id: str = Depends(verify_auth_token)):
+async def get_identity_hash(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
     """
     Get identity verification hash for the authenticated user
 
     Returns a hash that can be used to verify user identity with third-party services
     """
+    user_id, _ = user_info
+
     try:
         user_hash = hmac.new(
             FEATUREBASE_IDENTITY_VERIFICATION_SECRET.encode(),

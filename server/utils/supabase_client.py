@@ -93,6 +93,7 @@ class SupabaseClient:
                 await client.table("users")
                 .select("*")
                 .eq("auth_id", user_id)
+                .limit(1)
                 .single()
                 .execute()
             )
@@ -100,9 +101,383 @@ class SupabaseClient:
         return await cls.execute_query(query)
 
     @classmethod
-    async def store_message(cls, message_data: Dict) -> Tuple[Any, Optional[str]]:
+    async def fetch_user_messages(
+        cls, user_id: str, limit: int = 50, offset: int = 0
+    ) -> Tuple[Any, Optional[str]]:
         """
-        Store a message in Supabase
+        Fetch user messages from Supabase
+
+        Args:
+            user_id (str): The user's ID
+            limit (int): Number of messages to return
+            offset (int): Number of messages to skip
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("messages")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("sent_at", desc=True)
+                .limit(limit)
+                .offset(offset)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def verify_organization_membership(
+        cls, organization_id: str, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Verify if user has organization access in Supabase
+
+        Args:
+            organization_id (str): The organization ID
+            user_id (str): The user ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_members")
+                .select("*")
+                .eq("organization_id", organization_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_message(
+        cls, message_id: str, user_id: str, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch a specific message from Supabase
+
+        Args:
+            message_id (str): The message ID
+            user_id (str): The user ID
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("messages")
+                .select("*")
+                .eq("id", message_id)
+                .eq("user_id", user_id)
+                .eq("organization_id", organization_id)
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organization_memberships(
+        cls, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch organization memberships for a user
+
+        Args:
+            user_id (str): The user ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_members")
+                .select("organization_id, role")
+                .eq("user_id", user_id)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organizations(
+        cls, organization_ids: list[str]
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch organizations by IDs
+
+        Args:
+            organization_ids (list[str]): List of organization IDs
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organizations")
+                .select("*")
+                .in_("id", organization_ids)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organization(
+        cls, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch a single organization by ID
+
+        Args:
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organizations")
+                .select("*")
+                .eq("id", organization_id)
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def create_organization(
+        cls, name: str, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Create a new organization and add the creator as owner
+
+        Args:
+            name (str): The organization name
+            user_id (str): The user ID of the creator
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data with organization ID
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return await client.rpc(
+                "create_organization", {"p_name": name, "p_user_id": user_id}
+            ).execute()
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organization_contacts(
+        cls, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch contacts for an organization
+
+        Args:
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_contacts")
+                .select("*")
+                .eq("organization_id", organization_id)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_contacts(cls, contact_ids: list[str]) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch contacts by IDs
+
+        Args:
+            contact_ids (list[str]): List of contact IDs
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("contacts")
+                .select("phone_number")
+                .in_("id", contact_ids)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organization_api_keys(
+        cls, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch API keys for an organization
+
+        Args:
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("api_keys")
+                .select("*")
+                .eq("organization_id", organization_id)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def create_api_key(cls, api_key_data: Dict) -> Tuple[Any, Optional[str]]:
+        """
+        Create an API key in Supabase
+
+        Args:
+            api_key_data (Dict): Dictionary containing API key data
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return await client.table("api_keys").insert(api_key_data).execute()
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def revoke_api_key(
+        cls, key_id: str, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Revoke an API key
+
+        Args:
+            key_id (str): The API key ID
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("api_keys")
+                .update({"is_active": False})
+                .eq("id", key_id)
+                .eq("organization_id", organization_id)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def validate_api_key(cls, key_hash: str) -> Tuple[Any, Optional[str]]:
+        """
+        Validate an API key in Supabase
+
+        Args:
+            key_hash (str): The hashed API key
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("api_keys")
+                .select("user_id, organization_id, is_active")
+                .eq("key_hash", key_hash)
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def update_api_key_last_used(
+        cls, organization_id: str, key_hash: str, last_used: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Update the last used timestamp for an API key
+
+        Args:
+            organization_id (str): The organization's ID
+            key_hash (str): The hashed API key
+            last_used (str): The last used timestamp
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("api_keys")
+                .update({"last_used": last_used})
+                .eq("organization_id", organization_id)
+                .eq("key_hash", key_hash)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def create_message(cls, message_data: Dict) -> Tuple[Any, Optional[str]]:
+        """
+        Create a message in Supabase
 
         Args:
             message_data (Dict): Dictionary containing message data
@@ -146,12 +521,9 @@ class SupabaseClient:
         return await cls.execute_query(query)
 
     @classmethod
-    async def store_api_key(cls, api_key_data: Dict) -> Tuple[Any, Optional[str]]:
+    async def health_check(cls) -> Tuple[Any, Optional[str]]:
         """
-        Store an API key in Supabase
-
-        Args:
-            api_key_data (Dict): Dictionary containing API key data
+        Perform a health check on the Supabase connection
 
         Returns:
             Tuple[Any, Optional[str]]: Contains:
@@ -160,129 +532,6 @@ class SupabaseClient:
         """
 
         async def query(client):
-            return await client.table("api_keys").insert(api_key_data).execute()
-
-        return await cls.execute_query(query)
-
-    @classmethod
-    async def update_api_key_last_used(
-        cls, user_id: str, key_hash: str, last_used: str
-    ) -> Tuple[Any, Optional[str]]:
-        """
-        Update the last used timestamp for an API key
-
-        Args:
-            user_id (str): The user's ID
-            key_hash (str): The hashed API key
-            last_used (str): The last used timestamp
-
-        Returns:
-            Tuple[Any, Optional[str]]: Contains:
-                - data (Any): Supabase response data
-                - error (Optional[str]): Error message if any
-        """
-
-        async def query(client):
-            return (
-                await client.table("api_keys")
-                .update({"last_used": last_used})
-                .eq("user_id", user_id)
-                .eq("key_hash", key_hash)
-                .execute()
-            )
-
-        return await cls.execute_query(query)
-
-    @classmethod
-    async def validate_api_key(cls, key_hash: str) -> Tuple[Any, Optional[str]]:
-        """
-        Validate an API key in Supabase
-
-        Args:
-            key_hash (str): The hashed API key
-
-        Returns:
-            Tuple[Any, Optional[str]]: Contains:
-                - data (Any): Supabase response data
-                - error (Optional[str]): Error message if any
-        """
-
-        async def query(client):
-            return (
-                await client.table("api_keys")
-                .select("user_id, is_active")
-                .eq("key_hash", key_hash)
-                .single()
-                .execute()
-            )
-
-        return await cls.execute_query(query)
-
-    @classmethod
-    async def get_user_messages(
-        cls, user_id: str, limit: int = 50, offset: int = 0
-    ) -> Tuple[Any, Optional[str]]:
-        """
-        Get user messages from Supabase
-
-        Args:
-            user_id (str): The user's ID
-            limit (int): Number of messages to return
-            offset (int): Number of messages to skip
-
-        Returns:
-            Tuple[Any, Optional[str]]: Contains:
-                - data (Any): Supabase response data
-                - error (Optional[str]): Error message if any
-        """
-
-        async def query(client):
-            return (
-                await client.table("messages")
-                .select("*")
-                .eq("user_id", user_id)
-                .order("sent_at", desc=True)
-                .limit(limit)
-                .offset(offset)
-                .execute()
-            )
-
-        return await cls.execute_query(query)
-
-    @classmethod
-    async def verify_organization_access(
-        cls, organization_id: Optional[str], user_id: str
-    ) -> Tuple[Any, Optional[str]]:
-        """Verify user organization access in Supabase
-
-        Args:
-            organization_id (Optional[str]): Organization ID if provided
-            user_id (str): User ID
-
-        Returns:
-            Tuple[Any, Optional[str]]: Contains:
-                - data (Any): Supabase response data
-                - error (Optional[str]): Error message if any
-        """
-
-        async def query(client):
-            if organization_id:
-                return (
-                    await client.table("organization_members")
-                    .select("*")
-                    .eq("organization_id", organization_id)
-                    .eq("user_id", user_id)
-                    .single()
-                    .execute()
-                )
-            else:
-                return (
-                    await client.table("organization_members")
-                    .select("*")
-                    .eq("user_id", user_id)
-                    .order("created_at", desc=False)
-                    .single()
-                    .execute()
-                )
+            return await client.rpc("health_check").execute()
 
         return await cls.execute_query(query)

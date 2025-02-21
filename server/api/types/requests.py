@@ -16,3 +16,7 @@ class APIKeyRequest(BaseModel):
     permission: Optional[ApiKeyPermission] = Field(
         default=ApiKeyPermission.ALL, description="API key permission level"
     )
+
+
+class OrganizationRequest(BaseModel):
+    name: str = Field(..., description="Name for the organization")
