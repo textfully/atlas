@@ -469,9 +469,9 @@ class SupabaseClient:
         async def query(client):
             return (
                 await client.table("api_keys")
+                .update({"is_active": False})
                 .eq("id", key_id)
                 .eq("organization_id", organization_id)
-                .update({"is_active": False})
                 .execute()
             )
 
