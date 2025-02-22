@@ -23,7 +23,7 @@ class SubscriptionTier(str, Enum):
     FREE = "free"
     BASIC = "basic"
     PRO = "pro"
-    ENTERPRISE = "enterprise"
+    GROWTH = "growth"
 
 
 class OrganizationRole(str, Enum):

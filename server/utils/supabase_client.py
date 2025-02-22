@@ -161,6 +161,36 @@ class SupabaseClient:
         return await cls.execute_query(query)
 
     @classmethod
+    async def verify_organization_ownership(
+        cls, organization_id: str, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Verify if user has organization ownership in Supabase
+
+        Args:
+            organization_id (str): The organization ID
+            user_id (str): The user ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_members")
+                .select("*")
+                .eq("organization_id", organization_id)
+                .eq("user_id", user_id)
+                .eq("role", "OWNER")
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
     async def fetch_message(
         cls, message_id: str, user_id: str, organization_id: str
     ) -> Tuple[Any, Optional[str]]:
@@ -393,6 +423,8 @@ class SupabaseClient:
                 await client.table("api_keys")
                 .select("*")
                 .eq("organization_id", organization_id)
+                .eq("is_active", True)
+                .order("created_at", desc=True)
                 .execute()
             )
 
@@ -437,9 +469,9 @@ class SupabaseClient:
         async def query(client):
             return (
                 await client.table("api_keys")
-                .update({"is_active": False})
                 .eq("id", key_id)
                 .eq("organization_id", organization_id)
+                .update({"is_active": False})
                 .execute()
             )
 

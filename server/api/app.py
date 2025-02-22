@@ -272,11 +272,11 @@ async def create_organization(
     user_id, _ = user_info
 
     try:
-        if not request.get("name"):
+        if not request.name:
             raise HTTPException(status_code=400, detail="Organization name is required")
 
         organization_id, error = await SupabaseClient.create_organization(
-            request["name"], user_id
+            name=request.name, user_id=user_id
         )
 
         if error:
@@ -318,27 +318,21 @@ async def delete_organization(
         if organization_id != organization_id:
             raise HTTPException(status_code=403, detail="Invalid organization ID")
 
-        # Check organization ownership
-        memberships_data, memberships_error = (
-            await SupabaseClient.fetch_organization_memberships(user_id)
+        ownership_data, ownership_error = (
+            await SupabaseClient.verify_organization_ownership(organization_id, user_id)
         )
 
-        if memberships_error or not memberships_data:
+        if ownership_error:
             raise HTTPException(
-                status_code=500, detail="Failed to fetch organization memberships"
+                status_code=500, detail="Failed to verify organization ownership"
             )
 
-        if not any(
-            mem["organization_id"] == organization_id
-            and mem["role"] == OrganizationRole.OWNER
-            for mem in memberships_data
-        ):
+        if not ownership_data:
             raise HTTPException(
                 status_code=403,
                 detail="Only organization owners can delete the organization",
             )
 
-        # Delete organization
         _, error = await SupabaseClient.delete_organization(organization_id)
 
         if error:
@@ -459,16 +453,6 @@ async def revoke_api_key(
     _, organization_id = user_info
 
     try:
-        # Check API key ownership
-        data, error = await SupabaseClient.fetch_organization_api_keys(organization_id)
-
-        if error:
-            raise HTTPException(status_code=500, detail="Failed to fetch API keys")
-
-        if not any(key["id"] == key_id for key in data) or not data:
-            raise HTTPException(status_code=404, detail="API key not found")
-
-        # Revoke key
         _, error = await SupabaseClient.revoke_api_key(key_id, organization_id)
 
         if error:
