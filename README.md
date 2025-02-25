@@ -42,6 +42,7 @@ Messaging Server (for Atlas):
 
 ```sh
 python server/messaging_server.py
+tailscale serve -bg 1234 # Serve the messaging server on port 1234 via Tailscale
 ```
 
 ### Configuration
@@ -49,13 +50,13 @@ python server/messaging_server.py
 API Server Base URL:
 
 ```sh
-{ATLAS_SERVER_ADDRESS}
+https://api.textfully.dev
 ```
 
 Messaging Server Base URL:
 
 ```sh
-https://api.textfully.dev
+{ATLAS_SERVER_ADDRESS}
 ```
 
 ### Authentication
