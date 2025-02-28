@@ -8,6 +8,19 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class UserResponse(BaseModel):
+    id: str
+    full_name: str
+    email: str
+    avatar_url: Optional[str] = None
+    phone: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
+
+
 class MessageResponse(BaseModel):
     id: str
     recipient: str
@@ -70,3 +83,29 @@ class APIKeyResponse(BaseModel):
 
 class IdentityResponse(BaseModel):
     hash: str
+
+
+class OrganizationMemberResponse(BaseModel):
+    id: str
+    organization_id: str
+    user_id: str
+    role: OrganizationRole
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    full_name: str
+    email: str
+    avatar_url: Optional[str] = None
+
+    class Config:
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
+
+
+class InviteMemberResponse(BaseModel):
+    invite_token: str
+    inviter_name: str
+    organization_name: str
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+    class Config:
+        json_encoders = {datetime: lambda dt: dt.isoformat()}

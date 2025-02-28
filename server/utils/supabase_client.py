@@ -92,13 +92,34 @@ class SupabaseClient:
             return (
                 await client.table("users")
                 .select("*")
-                .eq("auth_id", user_id)
+                .eq("id", user_id)
                 .limit(1)
                 .single()
                 .execute()
             )
 
         return await cls.execute_query(query)
+
+    @classmethod
+    async def delete_user(cls, user_id: str) -> bool:
+        """Delete a user from Supabase
+
+        Args:
+            user_id (str): The user's ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        client = await cls.get_client()
+        response = await client.auth.admin.delete_user(user_id)
+
+        if response.user is not None:
+            return True
+        else:
+            return False
 
     @classmethod
     async def fetch_organization_messages(
@@ -182,7 +203,67 @@ class SupabaseClient:
                 .select("*")
                 .eq("organization_id", organization_id)
                 .eq("user_id", user_id)
-                .eq("role", "OWNER")
+                .eq("role", "owner")
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def verify_organization_admin(
+        cls, organization_id: str, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Verify if user is an administrator or owner of an organization
+
+        Args:
+            organization_id (str): The organization ID
+            user_id (str): The user ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data with the user's role if admin/owner
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_members")
+                .select("*")
+                .eq("organization_id", organization_id)
+                .eq("user_id", user_id)
+                .in_("role", ["owner", "administrator"])
+                .limit(1)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_member_role(
+        cls, organization_id: str, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Fetch the role of a user in an organization
+
+        Args:
+            organization_id (str): The organization ID
+            user_id (str): The user ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data with the user's role
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_members")
+                .select("role")
+                .eq("organization_id", organization_id)
+                .eq("user_id", user_id)
                 .limit(1)
                 .single()
                 .execute()
@@ -346,6 +427,33 @@ class SupabaseClient:
             return (
                 await client.table("organizations")
                 .delete()
+                .eq("id", organization_id)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def update_organization(
+        cls, organization_id: str, name: str
+    ) -> Tuple[Any, Optional[str]]:
+        """
+        Update an organization's name
+
+        Args:
+            organization_id (str): The organization ID
+            name (str): The new organization name
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Supabase response data
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organizations")
+                .update({"name": name})
                 .eq("id", organization_id)
                 .execute()
             )
@@ -591,5 +699,135 @@ class SupabaseClient:
 
         async def query(client):
             return await client.rpc("health_check").execute()
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organization_members(
+        cls, organization_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Fetch all members of an organization with their details
+
+        Args:
+            organization_id (str): The organization ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Processed member data with user information
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return await client.rpc(
+                "fetch_organization_members", {"p_organization_id": organization_id}
+            ).execute()
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def remove_organization_member(
+        cls, organization_id: str, member_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Remove a member from an organization
+
+        Args:
+            organization_id (str): The organization ID
+            member_id (str): The ID of the member to remove
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Success indicator
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.table("organization_members")
+                .delete()
+                .eq("organization_id", organization_id)
+                .eq("user_id", member_id)
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def create_organization_invite(
+        cls, organization_id: str, email: str, role: str, invited_by: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Create an invitation for a user to join an organization
+
+        Args:
+            organization_id (str): The organization ID
+            email (str): The email of the user to invite
+            role (str): The role to assign to the user
+            invited_by (str): The ID of the user creating the invite
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Invite ID if successful
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return await client.rpc(
+                "create_organization_invite",
+                {
+                    "p_organization_id": organization_id,
+                    "p_email": email,
+                    "p_role": role,
+                    "p_invited_by": invited_by,
+                },
+            ).execute()
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def fetch_organization_invite(
+        cls, invite_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Fetch an organization invite by ID
+
+        Args:
+            invite_id (str): The invite ID
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Invite data if successful
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return (
+                await client.from_("organization_invites")
+                .select("*")
+                .eq("id", invite_id)
+                .single()
+                .execute()
+            )
+
+        return await cls.execute_query(query)
+
+    @classmethod
+    async def leave_organization(
+        cls, organization_id: str, user_id: str
+    ) -> Tuple[Any, Optional[str]]:
+        """Allow a user to leave an organization
+
+        Args:
+            organization_id (str): The organization ID
+            user_id (str): The ID of the user leaving
+
+        Returns:
+            Tuple[Any, Optional[str]]: Contains:
+                - data (Any): Success indicator
+                - error (Optional[str]): Error message if any
+        """
+
+        async def query(client):
+            return await client.rpc(
+                "leave_organization",
+                {"p_organization_id": organization_id, "p_user_id": user_id},
+            ).execute()
 
         return await cls.execute_query(query)

@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Tuple
 import phonenumbers
 from datetime import datetime, timezone
+from constants.templates import organization_invite_template
+from utils.email_client import send_email
 from config.settings import FEATUREBASE_IDENTITY_VERIFICATION_SECRET
 from api.types.models import MessageModel
 from utils.rate_limiter import check_rate_limit, RateLimiter, get_organization_tier
@@ -16,7 +18,12 @@ from api.auth import (
     verify_bearer_token_skip_org_check,
 )
 from api.types.enums import MessageService, MessageStatus, OrganizationRole
-from api.types.requests import MessageRequest, APIKeyRequest, OrganizationRequest
+from api.types.requests import (
+    MessageRequest,
+    APIKeyRequest,
+    OrganizationRequest,
+    InviteMemberRequest,
+)
 from api.types.responses import (
     APIKeyResponse,
     ContactResponse,
@@ -25,6 +32,9 @@ from api.types.responses import (
     MessageResponse,
     CreateAPIKeyResponse,
     OrganizationResponse,
+    OrganizationMemberResponse,
+    InviteMemberResponse,
+    UserResponse,
 )
 import hmac
 import hashlib
@@ -42,6 +52,72 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/users/{user_id}", response_model=UserResponse)
+async def fetch_user(
+    user_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
+):
+    """Fetch a single user by ID"""
+    u_id, _ = user_info
+
+    try:
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+
+        if user_id != u_id:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
+
+        data, error = await SupabaseClient.fetch_user_data(user_id)
+
+        if error:
+            raise HTTPException(status_code=500, detail="Failed to fetch user")
+
+        if not data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return UserResponse(
+            id=data["id"],
+            full_name=data["full_name"],
+            email=data["email"],
+            avatar_url=data["avatar_url"],
+            phone=data["phone"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch user: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch user")
+
+
+@app.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
+):
+    """Delete a user"""
+    u_id, _ = user_info
+
+    try:
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+
+        if user_id != u_id:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
+
+        success = await SupabaseClient.delete_user(user_id)
+
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete user")
+
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete user: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete user")
 
 
 @app.post("/messages", response_model=MessageResponse)
@@ -141,9 +217,9 @@ async def send_message(
 @app.get("/messages/limits")
 async def get_message_limits(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
     """Get current rate limit status"""
-    _, organization_id = user_info
-    tier = await get_organization_tier(organization_id)
-    return await RateLimiter.get_current_limits(organization_id, tier)
+    _, org_id = user_info
+    tier = await get_organization_tier(org_id)
+    return await RateLimiter.get_current_limits(org_id, tier)
 
 
 @app.get("/messages/{message_id}", response_model=MessageResponse)
@@ -151,12 +227,13 @@ async def get_message(
     message_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
 ):
     """Get a message details"""
-    user_id, organization_id = user_info
+    user_id, org_id = user_info
 
     try:
-        data, error = await SupabaseClient.fetch_message(
-            message_id, user_id, organization_id
-        )
+        if not message_id:
+            raise HTTPException(status_code=400, detail="Message ID is required")
+
+        data, error = await SupabaseClient.fetch_message(message_id, user_id, org_id)
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to fetch message")
@@ -188,11 +265,11 @@ async def fetch_messages(
     offset: int = 0,
 ):
     """Fetch organization's messages"""
-    _, organization_id = user_info
+    _, org_id = user_info
 
     try:
         data, error = await SupabaseClient.fetch_organization_messages(
-            organization_id, limit, offset
+            org_id, limit, offset
         )
 
         if error:
@@ -282,7 +359,6 @@ async def create_organization(
         if error:
             raise HTTPException(status_code=500, detail="Failed to create organization")
 
-        # Fetch the created organization
         org_data, org_error = await SupabaseClient.fetch_organization(organization_id)
 
         if org_error or not org_data:
@@ -303,19 +379,64 @@ async def create_organization(
         raise HTTPException(status_code=500, detail="Failed to create organization")
 
 
+@app.get("/organizations/{organization_id}", response_model=OrganizationResponse)
+async def fetch_organization(
+    organization_id: str,
+    user_info: Tuple[str, Optional[str]] = Depends(verify_bearer_token),
+):
+    """Fetch a single organization by ID"""
+    user_id, org_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if organization_id != org_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        data, error = await SupabaseClient.fetch_organization(organization_id)
+
+        if error:
+            raise HTTPException(status_code=500, detail="Failed to fetch organization")
+
+        if not data:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        member_role, member_role_error = await SupabaseClient.fetch_member_role(
+            organization_id, user_id
+        )
+
+        if member_role_error:
+            raise HTTPException(status_code=500, detail="Failed to fetch member role")
+
+        return OrganizationResponse(
+            id=data["id"],
+            name=data["name"],
+            role=OrganizationRole(member_role["role"]),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch organization")
+
+
 @app.delete("/organizations/{organization_id}", status_code=204)
 async def delete_organization(
     organization_id: str,
     user_info: Tuple[str, Optional[str]] = Depends(verify_bearer_token),
 ):
     """Delete an organization"""
-    user_id, organization_id = user_info
+    user_id, org_id = user_info
 
     try:
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization ID is required")
 
-        if organization_id != organization_id:
+        if organization_id != org_id:
             raise HTTPException(status_code=403, detail="Invalid organization ID")
 
         ownership_data, ownership_error = (
@@ -347,14 +468,299 @@ async def delete_organization(
         raise HTTPException(status_code=500, detail="Failed to delete organization")
 
 
+@app.patch("/organizations/{organization_id}", response_model=OrganizationResponse)
+async def update_organization(
+    organization_id: str,
+    request: OrganizationRequest,
+    user_info: Tuple[str, Optional[str]] = Depends(verify_bearer_token),
+):
+    """Update an organization's name"""
+    user_id, org_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if organization_id != org_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        if not request.name:
+            raise HTTPException(status_code=400, detail="Organization name is required")
+
+        admin_data, admin_error = await SupabaseClient.verify_organization_admin(
+            organization_id, user_id
+        )
+
+        if admin_error:
+            raise HTTPException(
+                status_code=500, detail="Failed to verify organization permissions"
+            )
+
+        if not admin_data:
+            raise HTTPException(
+                status_code=403,
+                detail="Only organization owners and administrators can update the organization name",
+            )
+
+        data, error = await SupabaseClient.update_organization(
+            organization_id, request.name
+        )
+
+        if error:
+            raise HTTPException(status_code=500, detail="Failed to update organization")
+
+        if not data or len(data) == 0:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        org_data = data[0]
+        return OrganizationResponse(
+            id=org_data["id"],
+            name=org_data["name"],
+            role=admin_data["role"],
+            created_at=org_data["created_at"],
+            updated_at=org_data["updated_at"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update organization")
+
+
+@app.get(
+    "/organizations/{organization_id}/members",
+    response_model=List[OrganizationMemberResponse],
+)
+async def fetch_organization_members(
+    organization_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
+):
+    """Fetch all members of an organization"""
+    _, org_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if organization_id != org_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        members_data, error = await SupabaseClient.fetch_organization_members(
+            organization_id
+        )
+
+        if error:
+            raise HTTPException(
+                status_code=500, detail="Failed to fetch organization members"
+            )
+
+        if not members_data:
+            return []
+
+        return [
+            OrganizationMemberResponse(
+                id=member["id"],
+                organization_id=member["organization_id"],
+                user_id=member["user_id"],
+                role=member["role"],
+                created_at=member["created_at"],
+                updated_at=member["updated_at"],
+                full_name=member["full_name"],
+                email=member["email"],
+                avatar_url=member["avatar_url"],
+            )
+            for member in members_data
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch organization members: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch organization members"
+        )
+
+
+@app.delete("/organizations/{organization_id}/members/{member_id}", status_code=204)
+async def remove_organization_member(
+    organization_id: str,
+    member_id: str,
+    user_info: Tuple[str, str] = Depends(verify_bearer_token),
+):
+    """Remove a member from an organization"""
+    user_id, org_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if not member_id:
+            raise HTTPException(status_code=400, detail="Member ID is required")
+
+        if organization_id != org_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        admin_data, admin_error = await SupabaseClient.verify_organization_admin(
+            organization_id, user_id
+        )
+
+        if admin_error:
+            raise HTTPException(
+                status_code=500, detail="Failed to verify organization permissions"
+            )
+
+        if not admin_data:
+            raise HTTPException(
+                status_code=403,
+                detail="Only organization owners and administrators can remove users",
+            )
+
+        _, error = await SupabaseClient.remove_organization_member(
+            organization_id, member_id
+        )
+
+        if error:
+            raise HTTPException(
+                status_code=500, detail="Failed to remove organization member"
+            )
+
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to remove organization member: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail="Failed to remove organization member"
+        )
+
+
+@app.post(
+    "/organizations/{organization_id}/invites", response_model=InviteMemberResponse
+)
+async def invite_organization_member(
+    organization_id: str,
+    request: InviteMemberRequest,
+    user_info: Tuple[str, str] = Depends(verify_bearer_token),
+):
+    """Invite a user to join an organization"""
+    user_id, org_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if organization_id != org_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        admin_data, admin_error = await SupabaseClient.verify_organization_admin(
+            organization_id, user_id
+        )
+
+        if admin_error:
+            raise HTTPException(
+                status_code=500, detail="Failed to verify organization permissions"
+            )
+
+        if not admin_data:
+            raise HTTPException(
+                status_code=403,
+                detail="Only organization owners and administrators can invite users",
+            )
+
+        if not request.email:
+            raise HTTPException(status_code=400, detail="Email is required")
+
+        if request.role not in [
+            OrganizationRole.DEVELOPER,
+            OrganizationRole.ADMINISTRATOR,
+        ]:
+            raise HTTPException(
+                status_code=400, detail="Role must be 'developer' or 'administrator'"
+            )
+
+        invite_data, create_error = await SupabaseClient.create_organization_invite(
+            organization_id=organization_id,
+            email=request.email,
+            role=request.role,
+            invited_by=user_id,
+        )
+
+        if create_error or not invite_data:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create invite: {create_error}"
+            )
+
+        email = send_email(
+            request.email,
+            f"{invite_data['inviter_name']} invited you to join {invite_data['organization_name']} on Textfully",
+            organization_invite_template(
+                inviter_name=invite_data["inviter_name"],
+                inviter_email=invite_data["inviter_email"],
+                organization_name=invite_data["organization_name"],
+                invite_link=f"https://textfully.dev/invites/{invite_data['invite_token']}",
+                expires_at=invite_data["expires_at"],
+            ),
+        )
+
+        if not email:
+            raise HTTPException(
+                status_code=500, detail="Failed to send invitation email"
+            )
+
+        return InviteMemberResponse(
+            invite_token=invite_data["invite_token"],
+            inviter_name=invite_data["inviter_name"],
+            organization_name=invite_data["organization_name"],
+            created_at=invite_data["created_at"],
+            expires_at=invite_data["expires_at"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to invite organization member: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail="Failed to invite organization member"
+        )
+
+
+@app.post("/organizations/{organization_id}/leave", response_model=None)
+async def leave_organization(
+    organization_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
+):
+    """Leave an organization"""
+    user_id, org_id = user_info
+
+    try:
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization ID is required")
+
+        if organization_id != org_id:
+            raise HTTPException(status_code=403, detail="Invalid organization ID")
+
+        _, error = await SupabaseClient.leave_organization(organization_id, user_id)
+
+        if error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to leave organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to leave organization")
+
+
 @app.get("/contacts", response_model=List[ContactResponse])
 async def fetch_contacts(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
     """Fetch organization's contacts"""
-    _, organization_id = user_info
+    _, org_id = user_info
 
     try:
         org_contacts_data, org_contacts_error = (
-            await SupabaseClient.fetch_organization_contacts(organization_id)
+            await SupabaseClient.fetch_organization_contacts(org_id)
         )
 
         if org_contacts_error:
@@ -395,12 +801,12 @@ async def create_api_key(
     request: APIKeyRequest, user_info: Tuple[str, str] = Depends(verify_bearer_token)
 ):
     """Create a new API key"""
-    user_id, organization_id = user_info
+    user_id, org_id = user_info
 
     try:
         api_key, created_at = await AuthService.create_api_key(
             user_id=user_id,
-            organization_id=organization_id,
+            organization_id=org_id,
             name=request.name,
             permission=request.permission,
         )
@@ -416,10 +822,10 @@ async def create_api_key(
 @app.get("/api-keys", response_model=List[APIKeyResponse])
 async def fetch_api_keys(user_info: Tuple[str, str] = Depends(verify_bearer_token)):
     """Fetch organization's API keys"""
-    _, organization_id = user_info
+    _, org_id = user_info
 
     try:
-        data, error = await SupabaseClient.fetch_organization_api_keys(organization_id)
+        data, error = await SupabaseClient.fetch_organization_api_keys(org_id)
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to fetch API keys")
@@ -450,10 +856,13 @@ async def revoke_api_key(
     key_id: str, user_info: Tuple[str, str] = Depends(verify_bearer_token)
 ):
     """Revoke an API key"""
-    _, organization_id = user_info
+    _, org_id = user_info
 
     try:
-        _, error = await SupabaseClient.revoke_api_key(key_id, organization_id)
+        if not key_id:
+            raise HTTPException(status_code=400, detail="Key ID is required")
+
+        _, error = await SupabaseClient.revoke_api_key(key_id, org_id)
 
         if error:
             raise HTTPException(status_code=500, detail="Failed to revoke API key")
