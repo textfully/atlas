@@ -16,10 +16,16 @@ Backend messaging service for sending iMessage and SMS.
 
 2. Initialize Supabase database by running all SQL scripts in [`sql`](./sql) in your Supabase SQL editor
 
+### Navigate to Server Directory
+
+```sh
+cd server
+```
+
 ### Install Dependencies
 
 ```sh
-pip install -r server/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### Environment Variables
@@ -27,8 +33,8 @@ pip install -r server/requirements.txt
 Create `.env` files and retrieve secrets from AWS Secrets Manager
 
 ```sh
-cp server/.env.example server/.env
-python server/scripts/copy_env.py
+cp .env.example .env
+python scripts/copy_env.py
 ```
 
 ### Run Server
@@ -36,13 +42,13 @@ python server/scripts/copy_env.py
 API Server (for EC2):
 
 ```sh
-python server/api_server.py
+python api_server.py
 ```
 
 Messaging Server (for Atlas):
 
 ```sh
-python server/messaging_server.py
+python messaging_server.py
 tailscale serve -bg 1234 # Serve the messaging server on port 1234 via Tailscale
 ```
 
