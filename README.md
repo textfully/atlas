@@ -22,6 +22,7 @@ Create `.env` files and retrieve secrets from AWS Secrets Manager
 
 ```sh
 cp server/.env.example server/.env
+python copy_env.py
 ```
 
 ### Install Dependencies
