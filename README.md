@@ -45,6 +45,16 @@ API Server (for EC2):
 python api_server.py
 ```
 
+### EC2-specific Commands
+
+```sh
+# Restart the server
+systemctl restart atlas-ec2
+
+# Check the status of the server
+systemctl status atlas-ec2 -l
+```
+
 Messaging Server (for Atlas):
 
 ```sh
