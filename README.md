@@ -16,19 +16,19 @@ Backend messaging service for sending iMessage and SMS.
 
 2. Initialize Supabase database by running all SQL scripts in [`sql`](./sql) in your Supabase SQL editor
 
+### Install Dependencies
+
+```sh
+pip install -r server/requirements.txt
+```
+
 ### Environment Variables
 
 Create `.env` files and retrieve secrets from AWS Secrets Manager
 
 ```sh
 cp server/.env.example server/.env
-python copy_env.py
-```
-
-### Install Dependencies
-
-```sh
-pip install -r requirements.txt
+python server/scripts/copy_env.py
 ```
 
 ### Run Server

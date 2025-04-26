@@ -6,7 +6,7 @@ import os
 def main():
     secret_id = "atlas-secrets"
     region_name = "us-east-1"
-    env_path = "server/.env"
+    env_path = ".env"
 
     try:
         client = boto3.client("secretsmanager", region_name=region_name)
